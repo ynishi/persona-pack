@@ -1,0 +1,27 @@
+# Build artifacts
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Private workspace (notes, drafts, private origin specs)
+/workspace/
+
+# Per-user / per-host tooling
+.claude/
+.mcp.json
+.envrc
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# flow_assets — per-Pack runtime history, gitignored at directory level
+**/flow_assets/

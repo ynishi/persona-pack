@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/persona-pack",
+    "crates/persona-pack-mcp",
+]
+
+[workspace.package]
+version      = "0.1.0"
+edition      = "2021"
+license      = "MIT OR Apache-2.0"
+repository   = "https://github.com/ynishi/persona-pack"
+authors      = ["Yutaka Nishimura <ytk.nishimura@gmail.com>"]
+rust-version = "1.75"
+
+[workspace.dependencies]
+serde      = { version = "1", features = ["derive"] }
+toml       = "0.8"
+thiserror  = "1"
+anyhow     = "1"
+indexmap   = { version = "2", features = ["serde"] }

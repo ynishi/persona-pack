@@ -1,0 +1,18 @@
+[package]
+name        = "persona-pack"
+description = "Portable persona schema (Pack = 1 dir) for LLM applications. Format + minimal validator."
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+rust-version.workspace = true
+readme      = "../../README.md"
+keywords    = ["persona", "llm", "prompt", "toml", "schema"]
+categories  = ["data-structures", "config"]
+
+[dependencies]
+serde     = { workspace = true }
+toml      = { workspace = true }
+thiserror = { workspace = true }
+indexmap  = { workspace = true }

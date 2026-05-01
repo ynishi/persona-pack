@@ -1,0 +1,37 @@
+[package]
+name        = "persona-pack-mcp"
+description = "MCP server exposing CRUD + validate over Persona Pack directories."
+readme      = "../../README.md"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+rust-version.workspace = true
+keywords    = ["mcp", "persona", "llm", "prompt"]
+categories  = ["command-line-utilities"]
+
+[lib]
+name = "persona_pack_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "persona-pack-mcp"
+path = "src/main.rs"
+
+[dependencies]
+persona-pack = { path = "../persona-pack", version = "0.1.0" }
+anyhow       = { workspace = true }
+serde        = { workspace = true }
+serde_json   = "1"
+toml         = { workspace = true }
+rmcp         = { version = "1.6", features = ["server", "transport-io", "macros"] }
+schemars     = "1"
+tokio        = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
+tracing      = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+rmcp     = { version = "1.6", features = ["client", "transport-child-process"] }
+tempfile = "3"
+tokio    = { version = "1", features = ["full"] }
