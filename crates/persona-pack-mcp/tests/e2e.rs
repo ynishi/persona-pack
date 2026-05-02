@@ -177,3 +177,58 @@ async fn full_crud_cycle() {
 
     client.cancel().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delete_cycle() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap().to_string();
+
+    let transport = TokioChildProcess::new(Command::new(server_bin())).expect("spawn server");
+    let client = ().serve(transport).await.expect("initialize");
+
+    // persona_delete is listed as a tool
+    let tools = client.list_all_tools().await.expect("list tools");
+    let names: Vec<_> = tools.iter().map(|t| t.name.as_ref()).collect();
+    assert!(
+        names.contains(&"persona_delete"),
+        "missing tool: persona_delete"
+    );
+
+    // write alice
+    let write_res = client
+        .call_tool(call_params(
+            "persona_write",
+            json!({ "id": "alice", "toml": ALICE_TOML, "root": root }),
+        ))
+        .await
+        .expect("write call");
+    assert!(!write_res.is_error.unwrap_or(false));
+
+    // delete alice → ok
+    let del_res = client
+        .call_tool(call_params(
+            "persona_delete",
+            json!({ "id": "alice", "root": root }),
+        ))
+        .await
+        .expect("delete call");
+    assert!(!del_res.is_error.unwrap_or(false));
+    let del_text = extract_text(&del_res);
+    assert!(del_text.contains("\"ok\":true"), "got: {del_text}");
+
+    // read alice after delete → error (NotFound)
+    let read_res = client
+        .call_tool(call_params(
+            "persona_read",
+            json!({ "id": "alice", "root": root }),
+        ))
+        .await
+        .expect("read call");
+    assert!(
+        read_res.is_error.unwrap_or(false),
+        "expected error after delete, got: {}",
+        extract_text(&read_res)
+    );
+
+    client.cancel().await.unwrap();
+}

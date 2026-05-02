@@ -161,6 +161,25 @@ impl PackRoot {
         Ok(path)
     }
 
+    /// Delete `<root>/<id>/prompt.toml`. Also remove `<root>/<id>/` if empty after.
+    /// Returns the path that was removed. Error `PersonaError::NotFound` if missing.
+    pub fn delete(&self, id: &str) -> Result<PathBuf, PersonaError> {
+        let path = self.pack_toml(id);
+        if !path.exists() {
+            return Err(PersonaError::NotFound(id.to_string()));
+        }
+        std::fs::remove_file(&path)?;
+        let dir = self.pack_dir(id);
+        // Best-effort dir cleanup; ignore errors (dir may have other files)
+        if std::fs::read_dir(&dir)
+            .map(|mut it| it.next().is_none())
+            .unwrap_or(false)
+        {
+            let _ = std::fs::remove_dir(&dir);
+        }
+        Ok(path)
+    }
+
     /// List Pack ids under the root (every subdir containing `prompt.toml`).
     pub fn list(&self) -> Result<Vec<String>, PersonaError> {
         if !self.root.exists() {

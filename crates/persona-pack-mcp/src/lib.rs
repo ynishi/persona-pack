@@ -48,6 +48,12 @@ pub struct ValidateParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DeleteParams {
+    pub id: String,
+    pub root: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct RenderParams {
     pub id: String,
     pub root: Option<String>,
@@ -168,6 +174,15 @@ impl PersonaPackService {
         }
     }
 
+    /// Delete `<root>/<id>/prompt.toml`. Also removes the dir if empty after.
+    /// Returns `{ "ok": true, "path": "<deleted path>" }` on success.
+    #[tool(name = "persona_delete", annotations(open_world_hint = false))]
+    async fn delete(&self, Parameters(p): Parameters<DeleteParams>) -> Result<String, String> {
+        let root = self.pack_root(p.root);
+        let path = root.delete(&p.id).map_err(|e| e.to_string())?;
+        Ok(serde_json::json!({ "ok": true, "path": path.display().to_string() }).to_string())
+    }
+
     /// Server diagnostics: which root is in effect, version, and quick stats.
     /// Use this when you need to confirm where Personas are being read/written.
     #[tool(
@@ -185,7 +200,8 @@ impl PersonaPackService {
             "version": env!("CARGO_PKG_VERSION"),
             "tools": [
                 "persona_write", "persona_read", "persona_render",
-                "persona_list", "persona_validate", "persona_info"
+                "persona_list", "persona_validate", "persona_info",
+                "persona_delete"
             ],
         })
         .to_string())
@@ -205,7 +221,8 @@ impl ServerHandler for PersonaPackService {
              - persona_render(id, root?, format?): project to a prompt-ready string. format = prompt | header | json.\n\
              - persona_list(root?, origin?): list Pack ids, optionally filtered by origin.\n\
              - persona_validate(id, root?): minimal schema check.\n\
-             - persona_info(): show effective root, persona count, version.\n\n\
+             - persona_info(): show effective root, persona count, version.\n\
+             - persona_delete(id, root?): delete <root>/<id>/prompt.toml. Removes the dir if empty after.\n\n\
              Required fields: meta.id, meta.name, prompt.body. Origin: gem|claude|skill|orc|hand|custom:<tag>.\n\
              [extra.*] is preserved untouched."
                 .into(),
