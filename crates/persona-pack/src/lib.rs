@@ -295,6 +295,18 @@ impl PackRoot {
     /// * `PersonaError::Io` — file read failure
     /// * `PersonaError::Parse` — TOML parse error
     pub fn read_at(&self, id: &str, at: &str) -> Result<Persona, PersonaError> {
+        // Reject path-traversal shapes in `at`. The documented format is
+        // `YYYY-MM-DDTHH-MM-SSZ` produced by `snapshot_before_write`; any
+        // separator or `..` segment is necessarily out-of-spec and must not
+        // be allowed to escape the history/ directory.
+        if at.is_empty()
+            || at.contains('/')
+            || at.contains('\\')
+            || at.contains("..")
+            || at.contains('\0')
+        {
+            return Err(PersonaError::NotFound(format!("{id}@{at}")));
+        }
         let path = self.pack_dir(id).join("history").join(format!("{at}.toml"));
         if !path.exists() {
             return Err(PersonaError::NotFound(format!("{id}@{at}")));
@@ -635,6 +647,20 @@ version = "1.2.3"
             matches!(err, PersonaError::NotFound(_)),
             "missing snapshot must yield NotFound"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_at_rejects_traversal() {
+        let dir = tempdir_like();
+        let root = PackRoot::new(&dir);
+        for at in ["../escape", "..", "a/b", "a\\b", "../../etc/passwd", ""] {
+            let err = root.read_at("alice", at).unwrap_err();
+            assert!(
+                matches!(err, PersonaError::NotFound(_)),
+                "traversal-shaped at `{at}` must be rejected as NotFound"
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
