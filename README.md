@@ -54,7 +54,67 @@ adapters handle that.
 ## Crates
 
 - [`persona-pack`](crates/persona-pack) — schema + minimum validator (lib)
-- [`persona-pack-mcp`](crates/persona-pack-mcp) — MCP server with CRUD + validate
+- [`persona-pack-mcp`](crates/persona-pack-mcp) — MCP server with CRUD + validate (library crate)
+- [`persona-pack-cli`](crates/persona-pack-cli) — `persona-pack` binary: CLI + MCP server entry point
+
+## CLI
+
+Install the `persona-pack` binary (from the workspace root):
+
+```sh
+cargo install --path crates/persona-pack-cli
+```
+
+### List personas
+
+```sh
+# List all persona IDs as a JSON array
+persona-pack list
+
+# Filter by origin
+persona-pack list --origin hand
+
+# Pipe through jq
+persona-pack list | jq '.[]'
+```
+
+### Dump a persona
+
+```sh
+# Dump the "alice" persona as JSON (shape matches persona_read MCP tool)
+persona-pack dump alice
+
+# Dump a historical snapshot
+persona-pack dump alice --at 2026-05-06T10-35-12Z
+
+# Override the root directory
+persona-pack dump alice --root /path/to/personas
+```
+
+### Start the MCP server
+
+```sh
+persona-pack mcp
+```
+
+This starts the MCP server over stdio, equivalent to the former standalone
+`persona-pack-mcp` binary.
+
+`.mcp.json` entry:
+
+```json
+{
+  "mcpServers": {
+    "persona-pack": {
+      "command": "persona-pack",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+The `PERSONA_PACK_ROOT` environment variable and the per-tool `root` parameter
+work the same way as before (see [Setup](#setup-mcp-server) below).
 
 ## Setup (MCP server)
 
