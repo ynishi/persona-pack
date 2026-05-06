@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use time::macros::format_description;
 
 /// A parsed Persona Pack (`prompt.toml`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,6 +201,130 @@ impl PackRoot {
         ids.sort();
         Ok(ids)
     }
+
+    /// Copy the current `<root>/<id>/prompt.toml` to `<root>/<id>/history/<UTC-ts>.toml`
+    /// **before** any write operation overwrites it.
+    ///
+    /// # Arguments
+    /// * `id` — Pack identifier
+    ///
+    /// # Returns
+    /// * `Ok(Some(dst))` — snapshot was created at `dst`
+    /// * `Ok(None)` — no existing `prompt.toml` (first write; skip is correct behaviour)
+    /// * `Err(PersonaError::Io(...))` — I/O failure during directory creation or copy
+    ///
+    /// # Constraints (crux #1)
+    /// This method only **copies** the existing file. It does not modify `prompt.toml`.
+    /// The caller is responsible for calling `snapshot_before_write` before `write`.
+    pub fn snapshot_before_write(&self, id: &str) -> Result<Option<PathBuf>, PersonaError> {
+        let src = self.pack_toml(id);
+        if !src.exists() {
+            return Ok(None);
+        }
+        let history_dir = self.pack_dir(id).join("history");
+        std::fs::create_dir_all(&history_dir)?;
+        let fmt = format_description!("[year]-[month]-[day]T[hour]-[minute]-[second]Z");
+        // format_description! is validated at compile time; the only runtime failure
+        // path is an I/O-level condition, so we map to PersonaError::Io.
+        let ts = time::OffsetDateTime::now_utc()
+            .format(&fmt)
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        let dst = history_dir.join(format!("{ts}.toml"));
+        std::fs::copy(&src, &dst)?;
+        Ok(Some(dst))
+    }
+
+    /// List historical snapshots for `<root>/<id>/history/*.toml` in **descending**
+    /// timestamp order (most recent first).
+    ///
+    /// # Arguments
+    /// * `id` — Pack identifier
+    ///
+    /// # Returns
+    /// Each entry is `(timestamp_str, toml::Value)` where `timestamp_str` is the
+    /// filename stem (e.g. `"2026-05-06T10-35-12Z"`) and `toml::Value` is the full
+    /// parsed TOML document from that snapshot.  Returns `Ok(Vec::new())` when the
+    /// `history/` directory does not exist (not an error; no snapshots yet).
+    ///
+    /// # Errors
+    /// * `PersonaError::Io` — directory I/O failure
+    /// * `PersonaError::Parse` — a snapshot file contains invalid TOML
+    ///
+    /// # Constraints (crux #3)
+    /// Only `history/*.toml` files are included. `prompt.toml` is **never** added to
+    /// the result, even when `at` is not supplied.
+    pub fn history_list(&self, id: &str) -> Result<Vec<(String, toml::Value)>, PersonaError> {
+        let history_dir = self.pack_dir(id).join("history");
+        if !history_dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut entries: Vec<(String, toml::Value)> = Vec::new();
+        for entry in std::fs::read_dir(&history_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let content = std::fs::read_to_string(&path)?;
+            let value: toml::Value = toml::from_str(&content)?;
+            entries.push((stem.to_string(), value));
+        }
+        // Descending order: ISO8601-ish timestamp strings sort lexicographically = chronologically
+        entries.sort_by(|a, b| b.0.cmp(&a.0));
+        Ok(entries)
+    }
+
+    /// Read a historical snapshot `<root>/<id>/history/<at>.toml` and parse it as a
+    /// validated `Persona`.
+    ///
+    /// # Arguments
+    /// * `id` — Pack identifier
+    /// * `at` — timestamp string used as the filename stem (e.g. `"2026-05-06T10-35-12Z"`)
+    ///
+    /// # Returns
+    /// The parsed and validated `Persona` from the requested snapshot.
+    ///
+    /// # Errors
+    /// * `PersonaError::NotFound` — no snapshot file at `history/<at>.toml`
+    /// * `PersonaError::Io` — file read failure
+    /// * `PersonaError::Parse` — TOML parse error
+    pub fn read_at(&self, id: &str, at: &str) -> Result<Persona, PersonaError> {
+        let path = self.pack_dir(id).join("history").join(format!("{at}.toml"));
+        if !path.exists() {
+            return Err(PersonaError::NotFound(format!("{id}@{at}")));
+        }
+        let s = std::fs::read_to_string(&path)?;
+        Persona::from_toml_str(&s)
+    }
+}
+
+/// Walk a `toml::Value` tree using a dot-separated path (e.g. `"extra.version"`,
+/// `"meta.name"`, `"prompt.body"`).
+///
+/// # Arguments
+/// * `value` — root `toml::Value` to search (typically the full parsed TOML document)
+/// * `path`  — dot-separated key path; array indices are **not** supported
+///
+/// # Returns
+/// `Some(&toml::Value)` at the resolved path, or `None` if any segment is absent
+/// or a non-table node is encountered mid-path.
+///
+/// # Constraints (crux #2)
+/// This function must **never** restrict traversal to a fixed set of root keys.
+/// All root keys (`extra`, `meta`, `prompt`, and any future key) are resolved
+/// via the same uniform table-walk logic.
+pub fn lookup_dot_path<'a>(value: &'a toml::Value, path: &str) -> Option<&'a toml::Value> {
+    let mut current = value;
+    for segment in path.split('.') {
+        current = current.as_table()?.get(segment)?;
+    }
+    Some(current)
 }
 
 fn is_valid_origin(o: &str) -> bool {
@@ -346,11 +471,170 @@ body = "You are Alice."
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Create a unique temporary directory for a single test. Using a per-call
+    /// counter (via an atomic) avoids directory-name collisions when tests run
+    /// in parallel within the same process (same `std::process::id()`).
     fn tempdir_like() -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let mut p = std::env::temp_dir();
-        p.push(format!("persona-pack-test-{}", std::process::id()));
+        p.push(format!("persona-pack-test-{}-{}", std::process::id(), n));
         let _ = std::fs::remove_dir_all(&p);
+        // Safety: create_dir_all only fails on real I/O errors; test-only code.
         std::fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    // ── lookup_dot_path tests ──────────────────────────────────────────────
+
+    fn sample_toml_value() -> toml::Value {
+        let s = r#"
+[meta]
+id   = "alice"
+name = "Alice"
+
+[prompt]
+body = "You are Alice."
+
+[extra]
+version = "1.2.3"
+"#;
+        toml::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn lookup_dot_path_extra() {
+        let v = sample_toml_value();
+        let result = lookup_dot_path(&v, "extra.version");
+        assert_eq!(result.and_then(|v| v.as_str()), Some("1.2.3"));
+    }
+
+    #[test]
+    fn lookup_dot_path_meta() {
+        let v = sample_toml_value();
+        let result = lookup_dot_path(&v, "meta.name");
+        assert_eq!(result.and_then(|v| v.as_str()), Some("Alice"));
+    }
+
+    #[test]
+    fn lookup_dot_path_prompt() {
+        let v = sample_toml_value();
+        let result = lookup_dot_path(&v, "prompt.body");
+        assert_eq!(result.and_then(|v| v.as_str()), Some("You are Alice."));
+    }
+
+    #[test]
+    fn lookup_dot_path_missing() {
+        let v = sample_toml_value();
+        assert!(lookup_dot_path(&v, "extra.nonexistent").is_none());
+        assert!(lookup_dot_path(&v, "no_such_root.key").is_none());
+    }
+
+    // ── snapshot_before_write tests ────────────────────────────────────────
+
+    #[test]
+    fn snapshot_before_write_skip_when_absent() {
+        let dir = tempdir_like();
+        let root = PackRoot::new(&dir);
+        // No prompt.toml exists yet — first write scenario, expect Ok(None)
+        let result = root.snapshot_before_write("alice").unwrap();
+        assert!(result.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn snapshot_before_write_creates_history() {
+        let dir = tempdir_like();
+        let root = PackRoot::new(&dir);
+        // Write initial persona
+        let p = Persona::from_toml_str(MINIMAL).unwrap();
+        root.write(&p).unwrap();
+        // Snapshot before second write
+        let dst = root.snapshot_before_write("alice").unwrap();
+        assert!(dst.is_some(), "snapshot should be created");
+        let dst_path = dst.unwrap();
+        assert!(dst_path.exists(), "snapshot file must exist on disk");
+        // Confirm it's inside history/
+        assert!(dst_path.parent().unwrap().ends_with("history"));
+        // Confirm history_list now sees exactly 1 entry
+        let history = root.history_list("alice").unwrap();
+        assert_eq!(history.len(), 1, "exactly one snapshot expected");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── history_list tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn history_list_returns_descending() {
+        let dir = tempdir_like();
+        let root = PackRoot::new(&dir);
+        let p = Persona::from_toml_str(MINIMAL).unwrap();
+        root.write(&p).unwrap();
+        // First snapshot
+        root.snapshot_before_write("alice").unwrap();
+        // Sleep 1 second to guarantee distinct timestamps
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        // Second snapshot
+        root.snapshot_before_write("alice").unwrap();
+        let history = root.history_list("alice").unwrap();
+        assert_eq!(history.len(), 2, "two snapshots expected");
+        // Verify descending order: first timestamp >= second timestamp
+        assert!(
+            history[0].0 >= history[1].0,
+            "history must be in descending timestamp order"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn history_list_excludes_current_prompt_toml() {
+        let dir = tempdir_like();
+        let root = PackRoot::new(&dir);
+        let p = Persona::from_toml_str(MINIMAL).unwrap();
+        root.write(&p).unwrap();
+        // Take one snapshot
+        root.snapshot_before_write("alice").unwrap();
+        let history = root.history_list("alice").unwrap();
+        // Verify none of the entries has timestamp "prompt" (i.e., prompt.toml leaked in)
+        for (ts, _) in &history {
+            assert_ne!(ts, "prompt", "prompt.toml must not appear in history_list");
+        }
+        assert_eq!(history.len(), 1, "only the snapshot, not prompt.toml");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── read_at tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn read_at_returns_history_persona() {
+        let dir = tempdir_like();
+        let root = PackRoot::new(&dir);
+        let p = Persona::from_toml_str(MINIMAL).unwrap();
+        root.write(&p).unwrap();
+        // Snapshot the initial write
+        let dst = root.snapshot_before_write("alice").unwrap().unwrap();
+        // Derive timestamp from snapshot filename stem
+        let ts = dst
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap()
+            .to_string();
+        let loaded = root.read_at("alice", &ts).unwrap();
+        assert_eq!(loaded.meta.id, "alice");
+        assert_eq!(loaded.meta.name, "Alice");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_at_missing_returns_not_found() {
+        let dir = tempdir_like();
+        let root = PackRoot::new(&dir);
+        let err = root.read_at("alice", "2000-01-01T00-00-00Z").unwrap_err();
+        assert!(
+            matches!(err, PersonaError::NotFound(_)),
+            "missing snapshot must yield NotFound"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
