@@ -128,7 +128,8 @@ directory. The root is resolved in this order:
    - **Per project**, via the `env` block in your project's `.mcp.json`:
      ```json
      "persona-pack": {
-       "command": "persona-pack-mcp",
+       "command": "persona-pack",
+       "args": ["mcp"],
        "env": { "PERSONA_PACK_ROOT": "/abs/path/to/personas" }
      }
      ```
