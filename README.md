@@ -89,6 +89,62 @@ Per-call overrides are also supported: every tool accepts an optional
 See [`docs/persona-pack-spec.md`](docs/persona-pack-spec.md)
 for the full design rationale and origin-specific `[extra.*]` reservations.
 
+## History
+
+`persona_write` snapshots the existing `prompt.toml` into `<root>/<id>/history/<UTC>.toml`
+**before** overwriting it with the new content. The first write is skipped (nothing to snapshot).
+If the snapshot copy fails, the write is aborted — history integrity is never sacrificed for
+a successful overwrite.
+
+Snapshots are named with a UTC timestamp in the format `YYYY-MM-DDTHH-MM-SSZ`
+(colons replaced with hyphens for filesystem portability).
+
+### Listing history
+
+```json
+{ "tool": "persona_history", "arguments": { "id": "alice", "view": "extra.version" } }
+```
+
+Returns a JSON array sorted by timestamp descending (newest first):
+
+```json
+[
+  { "timestamp": "2026-05-06T11-02-44Z", "value": "2.0" },
+  { "timestamp": "2026-05-06T10-35-12Z", "value": "1.0" }
+]
+```
+
+The optional `root` parameter selects a non-default Pack root, same as all other tools.
+
+### View Selector
+
+The `view` parameter is a dot-path that is resolved uniformly across all top-level TOML
+sections — `extra.*`, `meta.*`, `prompt.*`, and any future key. There is no special-casing
+per section; the lookup walks the parsed TOML tree recursively for any root key.
+
+Examples:
+
+| view | returns |
+|------|---------|
+| `extra.version` | value of `[extra] version` in each snapshot |
+| `meta.name` | value of `[meta] name` in each snapshot |
+| `prompt.body` | value of `[prompt] body` in each snapshot |
+
+When the path is absent in a snapshot the entry is omitted from the result array.
+
+### Reading a past version
+
+Pass the `timestamp` string from a history entry as the `at` parameter to `persona_read`:
+
+```json
+{ "tool": "persona_read", "arguments": { "id": "alice", "at": "2026-05-06T10-35-12Z" } }
+```
+
+This returns the full Persona as it existed at that snapshot, identical to a normal
+`persona_read` but sourced from `history/<at>.toml` instead of the live `prompt.toml`.
+The current `prompt.toml` is never included in `persona_history` results — use
+`persona_read` (without `at`) to read the live version.
+
 ## License
 
 MIT OR Apache-2.0
