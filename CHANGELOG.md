@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `persona_history(id, view?, root?)` MCP tool: returns snapshot history for a Pack, sorted by timestamp descending (newest first). An optional `view` dot-path selector extracts a specific field from each snapshot across all top-level TOML sections (`extra.*`, `meta.*`, `prompt.*`, and any future key) without hardcoding per-section logic.
+- `persona_read` gains an optional `at` parameter: pass a timestamp string from a history entry to read the Pack as it existed at that snapshot.
+- `PackRoot::snapshot_before_write(id)` lib helper: copies `prompt.toml` to `history/<UTC>.toml` before every write (skipped on first write; copy failure aborts the write).
+- `PackRoot::history_list(id)` lib helper: lists `history/*.toml` entries only; never includes the live `prompt.toml`.
+- `PackRoot::read_at(id, at)` lib helper: reads a specific history snapshot by timestamp.
+- `lookup_dot_path(value, path)` pub fn in `persona-pack`: resolves a dot-separated path against any `toml::Value` tree uniformly.
+- `persona_info` `tools` array now includes `persona_history` (7 → 8 tools).
+
+### Changed
+- `persona_write` now snapshots the existing `prompt.toml` into `history/` **before** overwriting it. The first write is unaffected (no prior file to snapshot). A copy failure aborts the write.
+
+### Security
+- `persona_read(at=...)` guards against path traversal in the `at` parameter (same `[A-Za-z0-9_:T-Z]+` allowlist applied before constructing the history file path).
+
 ## [0.2.0] - 2026-05-02
 
 ### Added

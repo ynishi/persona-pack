@@ -19,6 +19,7 @@ see the spec for details.
 <root>/                  # PERSONA_PACK_ROOT (default: ~/persona-pack/)
   <id>/
     prompt.toml          # required (the Pack body)
+    history/             # auto-created; snapshots named <UTC>.toml
     entity_assets/       # optional: persistent assets (icons, knowledge files, memory)
     flow_assets/         # optional: ephemeral (chat logs, run-time data)
   registry.toml          # optional: thin id → path index, alongside <id>/ dirs
