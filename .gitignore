@@ -25,3 +25,8 @@ Thumbs.db
 
 # flow_assets — per-Pack runtime history, gitignored at directory level
 **/flow_assets/
+
+workspace
+.worktrees
+.claude
+.ryo
