@@ -7,13 +7,17 @@ use serde_json::{json, Value};
 use tokio::process::Command;
 use tokio::time::{sleep, Duration};
 
-fn server_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_persona-pack-mcp").unwrap_or_else(|_| {
+fn server_command() -> Command {
+    // persona-pack-mcp binary was replaced by `persona-pack mcp` (CLI crate).
+    let bin = std::env::var("CARGO_BIN_EXE_persona-pack").unwrap_or_else(|_| {
         format!(
-            "{}/../../target/debug/persona-pack-mcp",
+            "{}/../../target/debug/persona-pack",
             env!("CARGO_MANIFEST_DIR")
         )
-    })
+    });
+    let mut cmd = Command::new(bin);
+    cmd.arg("mcp");
+    cmd
 }
 
 fn call_params(name: &str, args: Value) -> CallToolRequestParams {
@@ -51,7 +55,7 @@ async fn full_crud_cycle() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_str().unwrap().to_string();
 
-    let transport = TokioChildProcess::new(Command::new(server_bin())).expect("spawn server");
+    let transport = TokioChildProcess::new(server_command()).expect("spawn server");
     let client = ().serve(transport).await.expect("initialize");
 
     // list_tools
@@ -184,7 +188,7 @@ async fn delete_cycle() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_str().unwrap().to_string();
 
-    let transport = TokioChildProcess::new(Command::new(server_bin())).expect("spawn server");
+    let transport = TokioChildProcess::new(server_command()).expect("spawn server");
     let client = ().serve(transport).await.expect("initialize");
 
     // persona_delete is listed as a tool
@@ -278,7 +282,7 @@ async fn history_cycle() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_str().unwrap().to_string();
 
-    let transport = TokioChildProcess::new(Command::new(server_bin())).expect("spawn server");
+    let transport = TokioChildProcess::new(server_command()).expect("spawn server");
     let client = ().serve(transport).await.expect("initialize");
 
     // persona_history is listed as a tool
