@@ -676,6 +676,7 @@ dependencies = [
  "clap",
  "persona-pack",
  "persona-pack-mcp",
+ "rmcp",
  "serde_json",
  "tempfile",
  "tokio",
