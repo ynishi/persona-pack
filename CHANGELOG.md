@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- New `persona-pack-cli` crate providing the `persona-pack` binary.
+- `persona-pack list [--origin <X>] [--root <path>]` — list Pack ids as JSON array.
+- `persona-pack dump <id> [--at <ts>] [--root <path>]` — dump a Persona as JSON (matches `persona_read` MCP tool shape).
+- `persona-pack mcp` — start the MCP server over stdio (replaces the standalone `persona-pack-mcp` binary).
 - `persona_history(id, view?, root?)` MCP tool: returns snapshot history for a Pack, sorted by timestamp descending (newest first). An optional `view` dot-path selector extracts a specific field from each snapshot across all top-level TOML sections (`extra.*`, `meta.*`, `prompt.*`, and any future key) without hardcoding per-section logic.
 - `persona_read` gains an optional `at` parameter: pass a timestamp string from a history entry to read the Pack as it existed at that snapshot.
 - `PackRoot::snapshot_before_write(id)` lib helper: copies `prompt.toml` to `history/<UTC>.toml` before every write (skipped on first write; copy failure aborts the write).
@@ -17,10 +21,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `persona_info` `tools` array now includes `persona_history` (7 → 8 tools).
 
 ### Changed
+- `persona-pack-mcp` is now a library crate exposing `pub async fn run() -> anyhow::Result<()>`. The MCP server bootstrap is invoked via `persona-pack mcp`.
 - `persona_write` now snapshots the existing `prompt.toml` into `history/` **before** overwriting it. The first write is unaffected (no prior file to snapshot). A copy failure aborts the write.
+
+### Removed
+- The standalone `persona-pack-mcp` binary. Use `persona-pack mcp` instead.
 
 ### Security
 - `persona_read(at=...)` guards against path traversal in the `at` parameter (same `[A-Za-z0-9_:T-Z]+` allowlist applied before constructing the history file path).
+
+### Migration
+
+Update `.mcp.json` from:
+
+```json
+{"mcpServers": {"persona-pack": {"command": "persona-pack-mcp"}}}
+```
+
+to:
+
+```json
+{"mcpServers": {"persona-pack": {"command": "persona-pack", "args": ["mcp"]}}}
+```
 
 ## [0.2.0] - 2026-05-02
 

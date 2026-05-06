@@ -15,12 +15,9 @@ categories  = ["command-line-utilities"]
 name = "persona_pack_mcp"
 path = "src/lib.rs"
 
-[[bin]]
-name = "persona-pack-mcp"
-path = "src/main.rs"
 
 [dependencies]
-persona-pack = { path = "../persona-pack", version = "0.3.0" }
+persona-pack = { path = "../persona-pack", version = "0.4.0" }
 anyhow       = { workspace = true }
 serde        = { workspace = true }
 serde_json   = "1"
