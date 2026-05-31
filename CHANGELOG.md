@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `meta.private_fields` schema field for declarative field-level private (TOML dotted paths, literal only).
+- `Persona::redact_for(as_id)` core API returning a redacted clone (key-strip, not placeholder).
+- `as` argument on `persona_read` / `persona_render` / `persona_write` / `persona_history` / `persona_validate` MCP tools (honor system).
+- `persona_write` permission guard: mutations on private fields or private path values require `as == meta.id` (returns `PermissionDenied` with zero write).
+- `--as <ID>` flag on `persona-pack list` / `persona-pack dump` CLI subcommands.
+- `PersonaError::PermissionDenied` variant.
+
 ## [0.3.0] - 2026-05-07
 
 ### Added

@@ -46,11 +46,14 @@ metadata goes in a dot directory.**
 
 ```toml
 [meta]
-spec_version = "0.1"                # optional. MAJOR.MINOR; missing = "0.1".
-id     = "kebab-or-snake-case-id"   # required, unique
-name   = "Display Name"             # required, human-readable
-origin = "hand"                     # required, see §2.2 for reserved values
-short  = "one-line description"     # optional but recommended
+spec_version   = "0.1"                # optional. MAJOR.MINOR; missing = "0.1".
+id             = "kebab-or-snake-case-id"   # required, unique
+name           = "Display Name"             # required, human-readable
+origin         = "hand"                     # required, see §2.2 for reserved values
+short          = "one-line description"     # optional but recommended
+private_fields = ["extra.secret"]    # optional. Dotted-path key list to hide
+                                     # when caller is not the persona itself.
+                                     # Literal paths only (no glob/index).
 
 [prompt]
 body   = """
@@ -87,6 +90,28 @@ authoring tools should write `spec_version` explicitly.
 This field describes the **schema** the Pack was authored against. It does
 **not** track changes to the Persona's own content over time; see §7
 "Pack-level versioning" for that distinction.
+
+### 2.1.2 Field-Level Private (`meta.private_fields`)
+
+Optional list of TOML dotted paths to mark as private. When a caller provides
+`as = "<id>"` to read/render tools and `<id> != meta.id`, the listed paths are
+**deleted as keys** (not replaced with placeholder or `null`) from the
+response. Anonymous callers (no `as`) receive the same redacted view.
+
+Constraints:
+
+- Literal paths only. Glob (`extra.*.secret`) and array index syntax are not
+  supported (v0.1 scope).
+- Only `extra.*` paths take effect. Typed fields (`meta.X`, `prompt.X`) are
+  silently skipped to keep the redacted Persona schema-valid.
+- Honor system: callers self-identify; the server does not authenticate.
+- `persona_write` enforces that mutations touching the `private_fields` list or
+  any private path require `as == meta.id`; violations return `PermissionDenied`
+  with zero write and zero snapshot.
+- `persona_validate` ignores the `as` argument and validates against the full
+  Persona.
+- Existing Packs without `private_fields` are treated as fully public (backward
+  compatible).
 
 ### 2.2 Reserved Origin Values
 
