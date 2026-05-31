@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-31
+
 ### Added
 - `meta.private_fields` schema field for declarative field-level private (TOML dotted paths, literal only).
 - `Persona::redact_for(as_id)` core API returning a redacted clone (key-strip, not placeholder).
@@ -87,6 +89,7 @@ Initial public release.
 - `meta.id` and `custom:<tag>` origin tags are restricted to
   `[A-Za-z0-9_-]+`, preventing path-traversal writes via `persona_write`.
 
+[0.4.0]: https://github.com/ynishi/persona-pack/releases/tag/v0.4.0
 [0.3.0]: https://github.com/ynishi/persona-pack/releases/tag/v0.3.0
 [0.2.0]: https://github.com/ynishi/persona-pack/releases/tag/v0.2.0
 [0.1.0]: https://github.com/ynishi/persona-pack/releases/tag/v0.1.0

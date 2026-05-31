@@ -658,7 +658,7 @@ checksum = "c5a797f0e07bdf071d15742978fc3128ec6c22891c31a3a931513263904c982a"
 
 [[package]]
 name = "persona-pack"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "indexmap",
  "serde",
@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "persona-pack-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -684,7 +684,7 @@ dependencies = [
 
 [[package]]
 name = "persona-pack-mcp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "persona-pack",
