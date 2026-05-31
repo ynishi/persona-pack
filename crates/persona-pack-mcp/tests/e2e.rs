@@ -455,3 +455,752 @@ async fn history_cycle() {
 
     client.cancel().await.unwrap();
 }
+
+// ── private_fields e2e tests ──────────────────────────────────────────────────
+
+/// TOML with a private extra field.
+const PRIVATE_TOML: &str = r#"
+[meta]
+id     = "alice"
+name   = "Alice"
+origin = "hand"
+private_fields = ["extra.secret"]
+
+[prompt]
+body = "You are Alice."
+
+[extra]
+secret = "mysecret"
+public = "visible"
+"#;
+
+/// TOML with no private fields (for first-write tests).
+const PUBLIC_TOML: &str = r#"
+[meta]
+id     = "alice"
+name   = "Alice"
+origin = "hand"
+
+[prompt]
+body = "You are Alice."
+
+[extra]
+public = "visible"
+"#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn read_with_as_self_returns_full() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap().to_string();
+
+    let transport = TokioChildProcess::new(server_command()).expect("spawn server");
+    let client = ().serve(transport).await.expect("initialize");
+
+    // Write with as=alice (owner)
+    let w = client
+        .call_tool(call_params(
+            "persona_write",
+            json!({ "id": "alice", "toml": PRIVATE_TOML, "root": root, "as": "alice" }),
+        ))
+        .await
+        .expect("write call");
+    assert!(
+        !w.is_error.unwrap_or(false),
+        "write failed: {}",
+        extract_text(&w)
+    );
+
+    // Read with as=alice → full persona including extra.secret
+    let r = client
+        .call_tool(call_params(
+            "persona_read",
+            json!({ "id": "alice", "root": root, "as": "alice" }),
+        ))
+        .await
+        .expect("read call");
+    assert!(!r.is_error.unwrap_or(false));
+    let r_text = extract_text(&r);
+    assert!(
+        r_text.contains("\"secret\""),
+        "owner should see private field; got: {r_text}"
+    );
+    assert!(
+        r_text.contains("mysecret"),
+        "owner should see private value; got: {r_text}"
+    );
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn read_with_as_other_strips_private() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap().to_string();
+
+    let transport = TokioChildProcess::new(server_command()).expect("spawn server");
+    let client = ().serve(transport).await.expect("initialize");
+
+    let w = client
+        .call_tool(call_params(
+            "persona_write",
+            json!({ "id": "alice", "toml": PRIVATE_TOML, "root": root, "as": "alice" }),
+        ))
+        .await
+        .expect("write call");
+    assert!(!w.is_error.unwrap_or(false));
+
+    // Read with as=other → secret key stripped entirely
+    let r = client
+        .call_tool(call_params(
+            "persona_read",
+            json!({ "id": "alice", "root": root, "as": "other_id" }),
+        ))
+        .await
+        .expect("read call");
+    assert!(!r.is_error.unwrap_or(false));
+    let r_text = extract_text(&r);
+    assert!(
+        !r_text.contains("\"secret\""),
+        "non-owner must not see private key; got: {r_text}"
+    );
+    assert!(
+        !r_text.contains("mysecret"),
+        "non-owner must not see private value; got: {r_text}"
+    );
+    // public field still visible
+    assert!(
+        r_text.contains("\"public\""),
+        "public field must remain; got: {r_text}"
+    );
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn read_with_as_omitted_strips_private() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap().to_string();
+
+    let transport = TokioChildProcess::new(server_command()).expect("spawn server");
+    let client = ().serve(transport).await.expect("initialize");
+
+    let w = client
+        .call_tool(call_params(
+            "persona_write",
+            json!({ "id": "alice", "toml": PRIVATE_TOML, "root": root, "as": "alice" }),
+        ))
+        .await
+        .expect("write call");
+    assert!(!w.is_error.unwrap_or(false));
+
+    // Read with as omitted → anonymous = stripped
+    let r = client
+        .call_tool(call_params(
+            "persona_read",
+            json!({ "id": "alice", "root": root }),
+        ))
+        .await
+        .expect("read call");
+    assert!(!r.is_error.unwrap_or(false));
+    let r_text = extract_text(&r);
+    assert!(
+        !r_text.contains("\"secret\""),
+        "anonymous must not see private key; got: {r_text}"
+    );
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn render_with_as_other_strips_in_json_format() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap().to_string();
+
+    let transport = TokioChildProcess::new(server_command()).expect("spawn server");
+    let client = ().serve(transport).await.expect("initialize");
+
+    let w = client
+        .call_tool(call_params(
+            "persona_write",
+            json!({ "id": "alice", "toml": PRIVATE_TOML, "root": root, "as": "alice" }),
+        ))
+        .await
+        .expect("write call");
+    assert!(!w.is_error.unwrap_or(false));
+
+    // render json format with as=other → secret stripped
+    let r = client
+        .call_tool(call_params(
+            "persona_render",
+            json!({ "id": "alice", "root": root, "format": "json", "as": "other_id" }),
+        ))
+        .await
+        .expect("render call");
+    assert!(!r.is_error.unwrap_or(false));
+    let r_text = extract_text(&r);
+    assert!(
+        !r_text.contains("\"secret\""),
+        "non-owner render json must not expose secret key; got: {r_text}"
+    );
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn render_prompt_format_unaffected_by_as() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap().to_string();
+
+    let transport = TokioChildProcess::new(server_command()).expect("spawn server");
+    let client = ().serve(transport).await.expect("initialize");
+
+    let w = client
+        .call_tool(call_params(
+            "persona_write",
+            json!({ "id": "alice", "toml": PRIVATE_TOML, "root": root, "as": "alice" }),
+        ))
+        .await
+        .expect("write call");
+    assert!(!w.is_error.unwrap_or(false));
+
+    // render prompt format: body is always present regardless of as
+    let r_other = client
+        .call_tool(call_params(
+            "persona_render",
+            json!({ "id": "alice", "root": root, "format": "prompt", "as": "other_id" }),
+        ))
+        .await
+        .expect("render prompt other call");
+    assert!(!r_other.is_error.unwrap_or(false));
+    let body_other = extract_text(&r_other).to_string();
+
+    let r_self = client
+        .call_tool(call_params(
+            "persona_render",
+            json!({ "id": "alice", "root": root, "format": "prompt", "as": "alice" }),
+        ))
+        .await
+        .expect("render prompt self call");
+    assert!(!r_self.is_error.unwrap_or(false));
+    let body_self = extract_text(&r_self).to_string();
+
+    // prompt.body is typed field — silent skip if listed in private_fields,
+    // so both should return the same body regardless.
+    assert_eq!(
+        body_other, body_self,
+        "prompt body must be identical for owner and non-owner"
+    );
+    assert!(
+        body_other.contains("You are Alice"),
+        "body must contain expected text; got: {body_other}"
+    );
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn history_with_as_other_strips_view_extracted_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap().to_string();
+
+    let transport = TokioChildProcess::new(server_command()).expect("spawn server");
+    let client = ().serve(transport).await.expect("initialize");
+
+    // First write (no snapshot yet)
+    let w1 = client
+        .call_tool(call_params(
+            "persona_write",
+            json!({ "id": "alice", "toml": PRIVATE_TOML, "root": root, "as": "alice" }),
+        ))
+        .await
+        .expect("write1 call");
+    assert!(!w1.is_error.unwrap_or(false));
+
+    sleep(Duration::from_secs(1)).await;
+
+    // Second write → snapshot of first is written to history/
+    let w2 = client
+        .call_tool(call_params(
+            "persona_write",
+            json!({ "id": "alice", "toml": PRIVATE_TOML, "root": root, "as": "alice" }),
+        ))
+        .await
+        .expect("write2 call");
+    assert!(!w2.is_error.unwrap_or(false));
+
+    // history with view=extra.secret, as=other → value should be null (stripped)
+    let h = client
+        .call_tool(call_params(
+            "persona_history",
+            json!({ "id": "alice", "view": "extra.secret", "root": root, "as": "other_id" }),
+        ))
+        .await
+        .expect("history call");
+    assert!(!h.is_error.unwrap_or(false));
+    let h_text = extract_text(&h);
+    let h_items: Vec<Value> = serde_json::from_str(h_text)
+        .unwrap_or_else(|e| panic!("parse history json: {e}\ngot: {h_text}"));
+    assert_eq!(h_items.len(), 1, "expected 1 snapshot; got: {h_text}");
+    assert!(
+        h_items[0]["value"].is_null(),
+        "private field view must be null for non-owner; got: {h_text}"
+    );
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn validate_does_not_redact() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap().to_string();
+
+    let transport = TokioChildProcess::new(server_command()).expect("spawn server");
+    let client = ().serve(transport).await.expect("initialize");
+
+    let w = client
+        .call_tool(call_params(
+            "persona_write",
+            json!({ "id": "alice", "toml": PRIVATE_TOML, "root": root, "as": "alice" }),
+        ))
+        .await
+        .expect("write call");
+    assert!(!w.is_error.unwrap_or(false));
+
+    // validate with as=other → should still return ok:true (validates full persona)
+    let v = client
+        .call_tool(call_params(
+            "persona_validate",
+            json!({ "id": "alice", "root": root, "as": "other_id" }),
+        ))
+        .await
+        .expect("validate call");
+    assert!(!v.is_error.unwrap_or(false));
+    let v_text = extract_text(&v);
+    assert!(
+        v_text.contains("\"ok\":true"),
+        "validate must return ok:true regardless of as; got: {v_text}"
+    );
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_self_modifying_private_field_succeeds() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap().to_string();
+
+    let transport = TokioChildProcess::new(server_command()).expect("spawn server");
+    let client = ().serve(transport).await.expect("initialize");
+
+    // Initial write
+    let w1 = client
+        .call_tool(call_params(
+            "persona_write",
+            json!({ "id": "alice", "toml": PRIVATE_TOML, "root": root, "as": "alice" }),
+        ))
+        .await
+        .expect("write1 call");
+    assert!(!w1.is_error.unwrap_or(false));
+
+    const UPDATED_TOML: &str = r#"
+[meta]
+id     = "alice"
+name   = "Alice"
+origin = "hand"
+private_fields = ["extra.secret"]
+
+[prompt]
+body = "You are Alice."
+
+[extra]
+secret = "newsecret"
+public = "visible"
+"#;
+
+    // Owner updates private field → should succeed
+    let w2 = client
+        .call_tool(call_params(
+            "persona_write",
+            json!({ "id": "alice", "toml": UPDATED_TOML, "root": root, "as": "alice" }),
+        ))
+        .await
+        .expect("write2 call");
+    assert!(
+        !w2.is_error.unwrap_or(false),
+        "owner must be able to update private field; got: {}",
+        extract_text(&w2)
+    );
+
+    // Verify new value is on disk (read as owner)
+    let r = client
+        .call_tool(call_params(
+            "persona_read",
+            json!({ "id": "alice", "root": root, "as": "alice" }),
+        ))
+        .await
+        .expect("read call");
+    assert!(!r.is_error.unwrap_or(false));
+    let r_text = extract_text(&r);
+    assert!(
+        r_text.contains("newsecret"),
+        "updated value must be persisted; got: {r_text}"
+    );
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_other_modifying_private_value_denied() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap().to_string();
+
+    let transport = TokioChildProcess::new(server_command()).expect("spawn server");
+    let client = ().serve(transport).await.expect("initialize");
+
+    // Setup: write initial pack as owner
+    let w1 = client
+        .call_tool(call_params(
+            "persona_write",
+            json!({ "id": "alice", "toml": PRIVATE_TOML, "root": root, "as": "alice" }),
+        ))
+        .await
+        .expect("write1 call");
+    assert!(!w1.is_error.unwrap_or(false));
+
+    // Get snapshot count before denied write (after first write, count=0)
+    sleep(Duration::from_secs(1)).await;
+    let h_before = client
+        .call_tool(call_params(
+            "persona_history",
+            json!({ "id": "alice", "root": root, "as": "alice" }),
+        ))
+        .await
+        .expect("history before call");
+    let h_before_text = extract_text(&h_before);
+    let h_before_items: Vec<Value> = serde_json::from_str(h_before_text)
+        .unwrap_or_else(|e| panic!("parse history: {e}\ngot: {h_before_text}"));
+    let snapshot_count_before = h_before_items.len();
+
+    const ATTACK_TOML: &str = r#"
+[meta]
+id     = "alice"
+name   = "Alice"
+origin = "hand"
+private_fields = ["extra.secret"]
+
+[prompt]
+body = "You are Alice."
+
+[extra]
+secret = "stolen"
+public = "visible"
+"#;
+
+    // Non-owner attempts to modify private value → PermissionDenied
+    let w2 = client
+        .call_tool(call_params(
+            "persona_write",
+            json!({ "id": "alice", "toml": ATTACK_TOML, "root": root, "as": "other_id" }),
+        ))
+        .await
+        .expect("write2 call");
+    assert!(
+        w2.is_error.unwrap_or(false),
+        "non-owner modifying private value must be denied"
+    );
+    let err_text = extract_text(&w2);
+    assert!(
+        err_text.contains("permission denied"),
+        "error must say permission denied; got: {err_text}"
+    );
+
+    // Zero snapshot: snapshot count must not change
+    let h_after = client
+        .call_tool(call_params(
+            "persona_history",
+            json!({ "id": "alice", "root": root, "as": "alice" }),
+        ))
+        .await
+        .expect("history after call");
+    let h_after_text = extract_text(&h_after);
+    let h_after_items: Vec<Value> = serde_json::from_str(h_after_text)
+        .unwrap_or_else(|e| panic!("parse history after: {e}\ngot: {h_after_text}"));
+    assert_eq!(
+        h_after_items.len(),
+        snapshot_count_before,
+        "snapshot count must not change on denied write (zero snapshot guarantee)"
+    );
+
+    // Zero write: original value must be intact
+    let r = client
+        .call_tool(call_params(
+            "persona_read",
+            json!({ "id": "alice", "root": root, "as": "alice" }),
+        ))
+        .await
+        .expect("read call");
+    let r_text = extract_text(&r);
+    assert!(
+        r_text.contains("mysecret"),
+        "private value must not have changed; got: {r_text}"
+    );
+    assert!(
+        !r_text.contains("stolen"),
+        "attacker's value must not be written; got: {r_text}"
+    );
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_other_adding_private_fields_denied() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap().to_string();
+
+    let transport = TokioChildProcess::new(server_command()).expect("spawn server");
+    let client = ().serve(transport).await.expect("initialize");
+
+    // Write initial pack with no private_fields
+    let w1 = client
+        .call_tool(call_params(
+            "persona_write",
+            json!({ "id": "alice", "toml": PUBLIC_TOML, "root": root }),
+        ))
+        .await
+        .expect("write1 call");
+    assert!(!w1.is_error.unwrap_or(false));
+
+    const WITH_PRIVATE: &str = r#"
+[meta]
+id     = "alice"
+name   = "Alice"
+origin = "hand"
+private_fields = ["extra.x"]
+
+[prompt]
+body = "You are Alice."
+
+[extra]
+x = "hidden"
+public = "visible"
+"#;
+
+    // Non-owner tries to add private_fields → denied
+    let w2 = client
+        .call_tool(call_params(
+            "persona_write",
+            json!({ "id": "alice", "toml": WITH_PRIVATE, "root": root, "as": "other_id" }),
+        ))
+        .await
+        .expect("write2 call");
+    assert!(
+        w2.is_error.unwrap_or(false),
+        "adding private_fields by non-owner must be denied"
+    );
+    let err_text = extract_text(&w2);
+    assert!(err_text.contains("permission denied"), "got: {err_text}");
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_other_removing_private_fields_denied() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap().to_string();
+
+    let transport = TokioChildProcess::new(server_command()).expect("spawn server");
+    let client = ().serve(transport).await.expect("initialize");
+
+    // Initial write with private_fields
+    let w1 = client
+        .call_tool(call_params(
+            "persona_write",
+            json!({ "id": "alice", "toml": PRIVATE_TOML, "root": root, "as": "alice" }),
+        ))
+        .await
+        .expect("write1 call");
+    assert!(!w1.is_error.unwrap_or(false));
+
+    // Non-owner tries to remove private_fields → denied
+    let w2 = client
+        .call_tool(call_params(
+            "persona_write",
+            json!({ "id": "alice", "toml": PUBLIC_TOML, "root": root, "as": "other_id" }),
+        ))
+        .await
+        .expect("write2 call");
+    assert!(
+        w2.is_error.unwrap_or(false),
+        "removing private_fields by non-owner must be denied"
+    );
+    let err_text = extract_text(&w2);
+    assert!(err_text.contains("permission denied"), "got: {err_text}");
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_other_modifying_public_field_succeeds() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap().to_string();
+
+    let transport = TokioChildProcess::new(server_command()).expect("spawn server");
+    let client = ().serve(transport).await.expect("initialize");
+
+    // Initial write with private_fields (secret is private)
+    let w1 = client
+        .call_tool(call_params(
+            "persona_write",
+            json!({ "id": "alice", "toml": PRIVATE_TOML, "root": root, "as": "alice" }),
+        ))
+        .await
+        .expect("write1 call");
+    assert!(!w1.is_error.unwrap_or(false));
+
+    const PUBLIC_UPDATE: &str = r#"
+[meta]
+id     = "alice"
+name   = "Alice"
+origin = "hand"
+private_fields = ["extra.secret"]
+
+[prompt]
+body = "You are Alice."
+
+[extra]
+secret = "mysecret"
+public = "updated_value"
+"#;
+
+    // Non-owner changes only the public field → allowed
+    let w2 = client
+        .call_tool(call_params(
+            "persona_write",
+            json!({ "id": "alice", "toml": PUBLIC_UPDATE, "root": root, "as": "other_id" }),
+        ))
+        .await
+        .expect("write2 call");
+    assert!(
+        !w2.is_error.unwrap_or(false),
+        "non-owner modifying public field must succeed; got: {}",
+        extract_text(&w2)
+    );
+
+    // Verify the public field was updated (owner view)
+    let r = client
+        .call_tool(call_params(
+            "persona_read",
+            json!({ "id": "alice", "root": root, "as": "alice" }),
+        ))
+        .await
+        .expect("read call");
+    let r_text = extract_text(&r);
+    assert!(
+        r_text.contains("updated_value"),
+        "public update must be persisted; got: {r_text}"
+    );
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_first_write_with_private_fields_requires_as_self() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap().to_string();
+
+    let transport = TokioChildProcess::new(server_command()).expect("spawn server");
+    let client = ().serve(transport).await.expect("initialize");
+
+    // First write with private_fields, as=other → denied
+    let w = client
+        .call_tool(call_params(
+            "persona_write",
+            json!({ "id": "alice", "toml": PRIVATE_TOML, "root": root, "as": "other_id" }),
+        ))
+        .await
+        .expect("write call");
+    assert!(
+        w.is_error.unwrap_or(false),
+        "first write with private_fields by non-owner must be denied"
+    );
+    let err_text = extract_text(&w);
+    assert!(err_text.contains("permission denied"), "got: {err_text}");
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_first_write_no_private_fields_succeeds_anonymous() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap().to_string();
+
+    let transport = TokioChildProcess::new(server_command()).expect("spawn server");
+    let client = ().serve(transport).await.expect("initialize");
+
+    // First write with no private_fields, no as → allowed
+    let w = client
+        .call_tool(call_params(
+            "persona_write",
+            json!({ "id": "alice", "toml": PUBLIC_TOML, "root": root }),
+        ))
+        .await
+        .expect("write call");
+    assert!(
+        !w.is_error.unwrap_or(false),
+        "first write with no private_fields must succeed anonymously; got: {}",
+        extract_text(&w)
+    );
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_omitted_as_with_private_fields_denied() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap().to_string();
+
+    let transport = TokioChildProcess::new(server_command()).expect("spawn server");
+    let client = ().serve(transport).await.expect("initialize");
+
+    // Setup: write initial pack as owner
+    let w1 = client
+        .call_tool(call_params(
+            "persona_write",
+            json!({ "id": "alice", "toml": PRIVATE_TOML, "root": root, "as": "alice" }),
+        ))
+        .await
+        .expect("write1 call");
+    assert!(!w1.is_error.unwrap_or(false));
+
+    const ATTACK_TOML: &str = r#"
+[meta]
+id     = "alice"
+name   = "Alice"
+origin = "hand"
+private_fields = ["extra.secret"]
+
+[prompt]
+body = "You are Alice."
+
+[extra]
+secret = "hacked"
+public = "visible"
+"#;
+
+    // Anonymous (as omitted) attempts to modify private value → denied
+    let w2 = client
+        .call_tool(call_params(
+            "persona_write",
+            json!({ "id": "alice", "toml": ATTACK_TOML, "root": root }),
+        ))
+        .await
+        .expect("write2 call");
+    assert!(
+        w2.is_error.unwrap_or(false),
+        "anonymous write modifying private value must be denied"
+    );
+    let err_text = extract_text(&w2);
+    assert!(err_text.contains("permission denied"), "got: {err_text}");
+
+    client.cancel().await.unwrap();
+}
