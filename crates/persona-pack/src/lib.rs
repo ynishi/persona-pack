@@ -37,6 +37,13 @@ pub struct Meta {
     /// `DEFAULT_SPEC_VERSION`. Tools may use this to gate features.
     #[serde(default)]
     pub spec_version: Option<String>,
+    /// Dotted-path list of fields that are private to the persona owner.
+    /// Only callers whose `as` argument matches `meta.id` receive the full
+    /// Persona; all others get a copy with every listed path removed entirely
+    /// (key-strip, not placeholder).  Existing Packs that omit this field
+    /// default to the empty list (all fields public).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub private_fields: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +76,8 @@ pub enum PersonaError {
     InvalidSpecVersion(String),
     #[error("persona not found: {0}")]
     NotFound(String),
+    #[error("permission denied: {0}")]
+    PermissionDenied(String),
 }
 
 impl Persona {
@@ -116,6 +125,74 @@ impl Persona {
 
     pub fn to_toml_string(&self) -> Result<String, toml::ser::Error> {
         toml::to_string_pretty(self)
+    }
+
+    /// Return a copy of this `Persona` with all private fields removed for the
+    /// given caller identity.
+    ///
+    /// # Arguments
+    /// * `as_id` — caller identity; typically the value of the `as` MCP
+    ///   parameter.  Pass `None` for anonymous callers.
+    ///
+    /// # Returns
+    /// * If `as_id == Some(&self.meta.id)` — an exact clone of `self` (owner
+    ///   access; all fields visible).
+    /// * Otherwise — a clone with every path listed in `meta.private_fields`
+    ///   removed entirely (key-strip; no placeholder substitution).
+    ///
+    /// This function is infallible.  Absent paths in `private_fields` are silently
+    /// skipped (no panic).  Paths rooted at `meta.*` or `prompt.*` are also
+    /// silently skipped to ensure the returned `Persona` remains valid (typed
+    /// fields cannot be stripped without breaking `validate()`).  Only paths
+    /// rooted at `extra.*` are acted upon.
+    pub fn redact_for(&self, as_id: Option<&str>) -> Persona {
+        // Owner always receives the full persona.
+        if as_id == Some(self.meta.id.as_str()) {
+            return self.clone();
+        }
+
+        let mut copy = self.clone();
+        // Iterate a snapshot of private_fields (copy.meta.private_fields is the
+        // same vec as self.meta.private_fields at this point; cloning the list
+        // upfront avoids borrow issues while mutating copy.extra).
+        let paths: Vec<String> = copy.meta.private_fields.clone();
+        for path in &paths {
+            let mut segments = path.splitn(2, '.');
+            match segments.next() {
+                Some("extra") => {
+                    let rest = match segments.next() {
+                        Some(r) if !r.is_empty() => r,
+                        // "extra" alone with no sub-key: skip
+                        _ => continue,
+                    };
+                    // Determine whether the rest is a single key or a nested path.
+                    if rest.contains('.') {
+                        // Nested path: walk into extra's sub-value via strip_dot_path.
+                        // We need the first segment to obtain the mutable sub-value.
+                        let mut sub_segs = rest.splitn(2, '.');
+                        let first = sub_segs.next().unwrap_or("");
+                        let tail = sub_segs.next().unwrap_or("");
+                        if first.is_empty() || tail.is_empty() {
+                            continue;
+                        }
+                        if let Some(sub_val) = copy.extra.get_mut(first) {
+                            strip_dot_path(sub_val, tail);
+                        }
+                        // If first key absent: no-op (crux #1: no panic).
+                    } else {
+                        // Single key directly under extra.
+                        copy.extra.shift_remove(rest);
+                    }
+                }
+                // Paths rooted at "meta" or "prompt" are typed fields; silently skip
+                // to keep the returned Persona valid (validate() would fail if these
+                // were deleted).
+                Some("meta") | Some("prompt") => {}
+                // Unknown root or empty: silently skip.
+                _ => {}
+            }
+        }
+        copy
     }
 }
 
@@ -337,6 +414,51 @@ pub fn lookup_dot_path<'a>(value: &'a toml::Value, path: &str) -> Option<&'a tom
         current = current.as_table()?.get(segment)?;
     }
     Some(current)
+}
+
+/// Walk a `toml::Value` tree using a dot-separated path and **remove** the leaf
+/// key, returning whether a key was actually deleted.
+///
+/// # Arguments
+/// * `value` — mutable root `toml::Value` to modify (typically a sub-tree
+///   extracted from the full TOML document)
+/// * `path`  — dot-separated key path to the key to remove; array indices are
+///   **not** supported
+///
+/// # Returns
+/// `true` if the leaf key was found and removed; `false` if any path segment
+/// was absent or a non-table node was encountered mid-path (no-op, no panic).
+///
+/// # Constraints (crux #1)
+/// The function removes only the exact leaf key specified by `path`.  All sibling
+/// keys and any intermediate table nodes are left untouched.  Empty intermediate
+/// tables are **not** cleaned up (scope decision; they are spec-neutral and do not
+/// leak private data).
+pub(crate) fn strip_dot_path(value: &mut toml::Value, path: &str) -> bool {
+    let mut segments: Vec<&str> = path.split('.').collect();
+    if segments.is_empty() {
+        return false;
+    }
+    let last = segments.pop().unwrap_or("");
+    if last.is_empty() {
+        return false;
+    }
+    // Walk to the parent table of the leaf key.
+    let mut current = value;
+    for seg in &segments {
+        match current.as_table_mut() {
+            Some(t) => match t.get_mut(*seg) {
+                Some(next) => current = next,
+                None => return false,
+            },
+            None => return false,
+        }
+    }
+    // Remove the leaf key from the parent table.
+    match current.as_table_mut() {
+        Some(t) => t.remove(last).is_some(),
+        None => false,
+    }
 }
 
 fn is_valid_origin(o: &str) -> bool {
@@ -662,5 +784,231 @@ version = "1.2.3"
             );
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── redact_for tests ───────────────────────────────────────────────────
+
+    /// Helper: build a Persona with private_fields and an extra secret value.
+    fn persona_with_private() -> Persona {
+        let s = r#"
+[meta]
+id             = "alice"
+name           = "Alice"
+origin         = "hand"
+private_fields = ["extra.secret"]
+
+[prompt]
+body = "You are Alice."
+
+[extra]
+secret = "top-secret"
+public = "visible"
+"#;
+        // Safety: this is a test-only static TOML string; parse failure means the
+        // test itself is broken, not production code.
+        Persona::from_toml_str(s).unwrap()
+    }
+
+    /// (T1) Owner receives the full Persona including private fields.
+    #[test]
+    fn redact_for_self_returns_full() {
+        let p = persona_with_private();
+        let result = p.redact_for(Some("alice"));
+        // Private field must still be present for the owner.
+        assert_eq!(
+            result.extra.get("secret").and_then(|v| v.as_str()),
+            Some("top-secret")
+        );
+        assert_eq!(
+            result.extra.get("public").and_then(|v| v.as_str()),
+            Some("visible")
+        );
+    }
+
+    /// (T1) Non-owner has private extra field stripped (key removed entirely,
+    /// no placeholder).  Crux #1: key-strip, not placeholder substitution.
+    #[test]
+    fn redact_for_other_strips_private_extra() {
+        let p = persona_with_private();
+        let result = p.redact_for(Some("other"));
+        // Secret must be completely absent — not null, not empty, not "<redacted>".
+        assert!(
+            !result.extra.contains_key("secret"),
+            "private key must be absent for non-owner"
+        );
+        // Public field must remain untouched.
+        assert_eq!(
+            result.extra.get("public").and_then(|v| v.as_str()),
+            Some("visible")
+        );
+    }
+
+    /// (T1) Anonymous caller (None) has private extra field stripped.
+    #[test]
+    fn redact_for_anonymous_strips_private_extra() {
+        let p = persona_with_private();
+        let result = p.redact_for(None);
+        assert!(
+            !result.extra.contains_key("secret"),
+            "private key must be absent for anonymous caller"
+        );
+        assert_eq!(
+            result.extra.get("public").and_then(|v| v.as_str()),
+            Some("visible")
+        );
+    }
+
+    /// (T2) Path listed in private_fields that does not exist in extra: no panic,
+    /// Persona is returned unchanged.
+    #[test]
+    fn redact_for_missing_path_no_op() {
+        let s = r#"
+[meta]
+id             = "alice"
+name           = "Alice"
+origin         = "hand"
+private_fields = ["extra.nonexistent"]
+
+[prompt]
+body = "You are Alice."
+"#;
+        // Safety: static test TOML.
+        let p = Persona::from_toml_str(s).unwrap();
+        // Must not panic; result should be a valid Persona.
+        let result = p.redact_for(Some("other"));
+        assert_eq!(result.meta.id, "alice");
+    }
+
+    /// (T2) Typed field path in private_fields is silently skipped — the field
+    /// remains present and validate() still passes.
+    #[test]
+    fn redact_for_typed_field_silent_skip() {
+        let s = r#"
+[meta]
+id             = "alice"
+name           = "Alice"
+origin         = "hand"
+private_fields = ["meta.name"]
+
+[prompt]
+body = "You are Alice."
+"#;
+        // Safety: static test TOML.
+        let p = Persona::from_toml_str(s).unwrap();
+        let result = p.redact_for(Some("other"));
+        // meta.name must still be present (typed field silent skip).
+        assert_eq!(result.meta.name, "Alice");
+        // validate() must pass on the redacted copy.
+        result
+            .validate()
+            .expect("redacted persona must remain valid");
+    }
+
+    /// (T1) Nested path `extra.orc.role` removes only the leaf key; the sibling
+    /// key `extra.orc.note` and the `extra.orc` table itself survive.
+    #[test]
+    fn redact_for_nested_extra_strip() {
+        let s = r#"
+[meta]
+id             = "alice"
+name           = "Alice"
+origin         = "hand"
+private_fields = ["extra.orc.role"]
+
+[prompt]
+body = "You are Alice."
+
+[extra.orc]
+role = "reviewer"
+note = "public note"
+"#;
+        // Safety: static test TOML.
+        let p = Persona::from_toml_str(s).unwrap();
+        let result = p.redact_for(Some("other"));
+        let orc = result
+            .extra
+            .get("orc")
+            .expect("extra.orc table must survive");
+        // Leaf key removed.
+        assert!(orc.get("role").is_none(), "extra.orc.role must be stripped");
+        // Sibling key untouched.
+        assert_eq!(
+            orc.get("note").and_then(|v| v.as_str()),
+            Some("public note"),
+            "extra.orc.note must be untouched"
+        );
+    }
+
+    // ── strip_dot_path tests ───────────────────────────────────────────────
+
+    /// (T1) Basic: remove a key from a flat table.
+    #[test]
+    fn strip_dot_path_basic() {
+        let mut val: toml::Value = toml::from_str(r#"key = "value""#).unwrap();
+        let removed = strip_dot_path(&mut val, "key");
+        assert!(removed, "strip_dot_path must return true when key exists");
+        assert!(
+            val.as_table().unwrap().get("key").is_none(),
+            "key must be absent after strip"
+        );
+    }
+
+    /// (T2) Missing path: returns false, no panic.
+    #[test]
+    fn strip_dot_path_missing() {
+        let mut val: toml::Value = toml::from_str(r#"other = "x""#).unwrap();
+        let removed = strip_dot_path(&mut val, "nonexistent");
+        assert!(!removed, "strip_dot_path must return false for missing key");
+        // Existing key must survive.
+        assert!(val.as_table().unwrap().get("other").is_some());
+    }
+
+    // ── PersonaError::PermissionDenied tests ──────────────────────────────
+
+    /// (T3) Error variant formats correctly via Display.
+    #[test]
+    fn permission_denied_error_display() {
+        let err = PersonaError::PermissionDenied("test".to_string());
+        assert!(
+            err.to_string().contains("permission denied: test"),
+            "PermissionDenied display must contain the expected message"
+        );
+    }
+
+    // ── private_fields serde round-trip tests ─────────────────────────────
+
+    /// (T2) When private_fields is empty, to_toml_string must not emit the field
+    /// (skip_serializing_if = "Vec::is_empty" guard).
+    #[test]
+    fn private_fields_serialize_skip_when_empty() {
+        // Safety: static test TOML without private_fields.
+        let p = Persona::from_toml_str(MINIMAL).unwrap();
+        assert!(p.meta.private_fields.is_empty());
+        let serialized = p.to_toml_string().unwrap();
+        assert!(
+            !serialized.contains("private_fields"),
+            "private_fields must not appear in serialized output when empty"
+        );
+    }
+
+    /// (T1) Round-trip: TOML with private_fields survives parse → serialize → parse.
+    #[test]
+    fn private_fields_round_trip() {
+        let s = r#"
+[meta]
+id             = "alice"
+name           = "Alice"
+origin         = "hand"
+private_fields = ["extra.secret"]
+
+[prompt]
+body = "You are Alice."
+"#;
+        // Safety: static test TOML.
+        let p = Persona::from_toml_str(s).unwrap();
+        assert_eq!(p.meta.private_fields, vec!["extra.secret"]);
+        let serialized = p.to_toml_string().unwrap();
+        let p2 = Persona::from_toml_str(&serialized).unwrap();
+        assert_eq!(p2.meta.private_fields, vec!["extra.secret"]);
     }
 }
