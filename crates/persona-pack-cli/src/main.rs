@@ -29,6 +29,11 @@ struct ListArgs {
     /// Root directory. Overrides PERSONA_PACK_ROOT env.
     #[arg(long)]
     root: Option<PathBuf>,
+    /// Caller identity. When equal to meta.id, full Persona is returned;
+    /// otherwise private fields are stripped. Currently only affects internal
+    /// filter; private fields are never returned by list.
+    #[arg(long = "as", value_name = "ID")]
+    as_id: Option<String>,
 }
 
 #[derive(Args)]
@@ -41,6 +46,10 @@ struct DumpArgs {
     /// Root directory. Overrides PERSONA_PACK_ROOT env.
     #[arg(long)]
     root: Option<PathBuf>,
+    /// Caller identity. When equal to meta.id, full Persona is returned;
+    /// otherwise private fields are stripped.
+    #[arg(long = "as", value_name = "ID")]
+    as_id: Option<String>,
 }
 
 /// Resolve the pack root from CLI arg → PERSONA_PACK_ROOT env → ~/persona-pack → ./persona-pack.
@@ -63,7 +72,10 @@ fn list_cmd(args: ListArgs) -> anyhow::Result<()> {
     let filtered: Vec<String> = if let Some(ref origin_filter) = args.origin {
         ids.into_iter()
             .filter(|id| match root.read(id) {
-                Ok(p) => p.meta.origin == *origin_filter,
+                Ok(p) => {
+                    let persona = p.redact_for(args.as_id.as_deref());
+                    persona.meta.origin == *origin_filter
+                }
                 Err(e) => {
                     eprintln!("warn: failed to read persona '{}': {}", id, e);
                     false
@@ -86,7 +98,8 @@ fn dump_cmd(args: DumpArgs) -> anyhow::Result<()> {
         None => root
             .read(&args.id)
             .with_context(|| format!("failed to read persona '{}'", args.id))?,
-    };
+    }
+    .redact_for(args.as_id.as_deref());
     println!("{}", serde_json::to_string_pretty(&persona)?);
     Ok(())
 }

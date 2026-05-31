@@ -34,10 +34,11 @@ with a Pack.
 
 ```toml
 [meta]
-spec_version = "0.1"   # optional, MAJOR.MINOR. Missing = "0.1".
-id     = "alice"
-name   = "Alice"
-origin = "hand"        # gem | claude | skill | orc | hand | custom:<tag>
+spec_version   = "0.1"          # optional, MAJOR.MINOR. Missing = "0.1".
+id             = "alice"
+name           = "Alice"
+origin         = "hand"         # gem | claude | skill | orc | hand | custom:<tag>
+private_fields = ["extra.secret"]  # optional; dotted paths hidden from non-owners
 
 [prompt]
 body = """
@@ -74,6 +75,9 @@ persona-pack list
 # Filter by origin
 persona-pack list --origin hand
 
+# List with private fields visible (as the persona owner)
+persona-pack list --as alice
+
 # Pipe through jq
 persona-pack list | jq '.[]'
 ```
@@ -89,6 +93,9 @@ persona-pack dump alice --at 2026-05-06T10-35-12Z
 
 # Override the root directory
 persona-pack dump alice --root /path/to/personas
+
+# Dump with private fields visible (as the persona owner)
+persona-pack dump alice --as alice
 ```
 
 ### Start the MCP server
@@ -206,6 +213,36 @@ This returns the full Persona as it existed at that snapshot, identical to a nor
 `persona_read` but sourced from `history/<at>.toml` instead of the live `prompt.toml`.
 The current `prompt.toml` is never included in `persona_history` results — use
 `persona_read` (without `at`) to read the live version.
+
+## Field-level privacy
+
+Declare `meta.private_fields` as a list of TOML dotted paths (e.g.
+`["extra.secret", "extra.internal.key"]`). When a caller provides `as = "<id>"`
+and it does not match `meta.id`, those keys are **deleted** from the response
+(not replaced with a placeholder). Anonymous callers receive the same redacted
+view.
+
+```toml
+[meta]
+id             = "alice"
+private_fields = ["extra.token", "extra.notes.internal"]
+```
+
+The `as` parameter is accepted by `persona_read`, `persona_render`,
+`persona_history`, `persona_validate`, and `persona_write` MCP tools, and by the
+`list` / `dump` CLI subcommands.
+
+**Write guard:** `persona_write` rejects calls that modify `private_fields`
+definitions or any private path value unless `as == meta.id`, returning a
+`PermissionDenied` error with zero write and zero snapshot.
+
+**Scope:** only `extra.*` paths are redacted. Typed fields (`meta.*`,
+`prompt.*`) are silently skipped so the redacted Persona remains schema-valid.
+This is an honor-system design — the server trusts the caller's self-declared
+identity.
+
+See [`docs/persona-pack-spec.md §2.1.2`](docs/persona-pack-spec.md) for full
+semantics.
 
 ## License
 
