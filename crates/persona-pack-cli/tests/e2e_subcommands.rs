@@ -200,3 +200,135 @@ fn list_empty_root_returns_empty_array() -> anyhow::Result<()> {
     assert_eq!(v, serde_json::json!([]));
     Ok(())
 }
+
+// ─── private_fields / --as flag tests ────────────────────────────────────────
+
+/// TOML fixture with `private_fields` set.
+const PRIVATE_ALICE_TOML: &str = r#"
+[meta]
+id             = "alice"
+name           = "Alice"
+origin         = "hand"
+private_fields = ["extra.secret"]
+
+[prompt]
+body = "I am Alice."
+
+[extra]
+secret = "top-secret-data"
+public = "visible"
+"#;
+
+/// `dump <id> --as <id>` (caller == persona) should return the full Persona
+/// including the private field.
+#[test]
+fn dump_with_as_self_returns_full() -> anyhow::Result<()> {
+    let dir = tempdir()?;
+    let root = PackRoot::new(dir.path().to_path_buf());
+    write_persona(&root, PRIVATE_ALICE_TOML)?;
+
+    let output = Command::cargo_bin("persona-pack")?
+        .args(["dump", "alice", "--as", "alice", "--root"])
+        .arg(dir.path())
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "dump --as self exited with failure"
+    );
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(
+        stdout.contains("\"secret\""),
+        "private field should be present when caller == persona id; stdout: {stdout}"
+    );
+    Ok(())
+}
+
+/// `dump <id> --as <other>` (caller != persona) should strip the private field.
+#[test]
+fn dump_with_as_other_strips_private() -> anyhow::Result<()> {
+    let dir = tempdir()?;
+    let root = PackRoot::new(dir.path().to_path_buf());
+    write_persona(&root, PRIVATE_ALICE_TOML)?;
+
+    let output = Command::cargo_bin("persona-pack")?
+        .args(["dump", "alice", "--as", "other", "--root"])
+        .arg(dir.path())
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "dump --as other exited with failure"
+    );
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(
+        !stdout.contains("\"secret\""),
+        "private field should be stripped when caller != persona id; stdout: {stdout}"
+    );
+    // Public field should still be present.
+    assert!(
+        stdout.contains("\"public\""),
+        "public field should remain; stdout: {stdout}"
+    );
+    Ok(())
+}
+
+/// `dump <id>` with no `--as` flag (anonymous caller) should strip the private field.
+#[test]
+fn dump_with_as_omitted_strips_private() -> anyhow::Result<()> {
+    let dir = tempdir()?;
+    let root = PackRoot::new(dir.path().to_path_buf());
+    write_persona(&root, PRIVATE_ALICE_TOML)?;
+
+    let output = Command::cargo_bin("persona-pack")?
+        .args(["dump", "alice", "--root"])
+        .arg(dir.path())
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "dump without --as exited with failure"
+    );
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(
+        !stdout.contains("\"secret\""),
+        "private field should be stripped for anonymous caller; stdout: {stdout}"
+    );
+    // Public field should still be present.
+    assert!(
+        stdout.contains("\"public\""),
+        "public field should remain; stdout: {stdout}"
+    );
+    Ok(())
+}
+
+/// `list --as <id>` should parse successfully and return the id array.
+/// (list output is id-only; private fields are never included, so `--as` has
+/// no visible effect on output but must be accepted as a valid flag.)
+#[test]
+fn list_with_as_returns_ids() -> anyhow::Result<()> {
+    let dir = tempdir()?;
+    let root = PackRoot::new(dir.path().to_path_buf());
+    write_persona(&root, PRIVATE_ALICE_TOML)?;
+
+    let output = Command::cargo_bin("persona-pack")?
+        .args(["list", "--as", "alice", "--root"])
+        .arg(dir.path())
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "list --as exited with failure; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout)?;
+    let v: Value = serde_json::from_str(&stdout).expect("list --as output is valid JSON");
+    // Result must be an array containing "alice".
+    assert!(
+        v.as_array()
+            .map(|arr| arr.iter().any(|e| e == "alice"))
+            .unwrap_or(false),
+        "expected id array containing 'alice'; got: {stdout}"
+    );
+    Ok(())
+}
