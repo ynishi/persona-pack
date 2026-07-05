@@ -19,13 +19,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-const GUIDES: &[&str] = &[
-    "onboarding",
-    "schema",
-    "field-private",
-    "history",
-    "render",
-];
+const GUIDES: &[&str] = &["onboarding", "schema", "field-private", "history", "render"];
 
 fn main() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -33,9 +27,7 @@ fn main() {
     for name in GUIDES {
         let filename = format!("{name}.md");
         let crate_copy = manifest_dir.join("guides").join(&filename);
-        let workspace_copy = manifest_dir
-            .join("../../docs/guides")
-            .join(&filename);
+        let workspace_copy = manifest_dir.join("../../docs/guides").join(&filename);
 
         println!("cargo:rerun-if-changed=guides/{filename}");
         println!("cargo:rerun-if-changed=../../docs/guides/{filename}");
@@ -47,10 +39,10 @@ fn main() {
             continue;
         }
 
-        let crate_bytes = fs::read(&crate_copy)
-            .unwrap_or_else(|e| panic!("read {:?}: {e}", crate_copy));
-        let workspace_bytes = fs::read(&workspace_copy)
-            .unwrap_or_else(|e| panic!("read {:?}: {e}", workspace_copy));
+        let crate_bytes =
+            fs::read(&crate_copy).unwrap_or_else(|e| panic!("read {:?}: {e}", crate_copy));
+        let workspace_bytes =
+            fs::read(&workspace_copy).unwrap_or_else(|e| panic!("read {:?}: {e}", workspace_copy));
 
         if crate_bytes != workspace_bytes {
             panic!(
