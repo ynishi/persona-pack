@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `persona-pack-mcp` now advertises the `resources` capability and exposes five bundled guides at `persona-pack://guides/{onboarding,schema,field-private,history,render}` (`text/markdown`). Clients can discover them via `resources/list` and fetch content via `read_resource`.
+- Canonical guides live under `docs/guides/`; the crate ships in-tree copies at `crates/persona-pack-mcp/guides/` and a `build.rs` guard byte-compares the pairs on every dev build to prevent drift. `include_str!` inside the crate directory keeps `cargo publish` self-contained.
+- `persona_info` output gains a `resources` field listing the five guide URIs.
+
 ## [0.4.0] - 2026-05-31
 
 ### Added

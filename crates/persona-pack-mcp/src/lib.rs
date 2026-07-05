@@ -6,10 +6,16 @@ use anyhow::Result;
 use persona_pack::{lookup_dot_path, PackRoot, Persona, PersonaError};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{ServerCapabilities, ServerInfo},
-    schemars, tool, tool_handler, tool_router,
+    model::{
+        ListResourcesResult, PaginatedRequestParams, RawResource, ReadResourceRequestParams,
+        ReadResourceResult, Resource, ResourceContents, ServerCapabilities, ServerInfo,
+    },
+    schemars,
+    service::RequestContext,
+    service::RoleServer,
+    tool, tool_handler, tool_router,
     transport::stdio,
-    ServerHandler, ServiceExt,
+    ErrorData, ServerHandler, ServiceExt,
 };
 use serde::Deserialize;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -456,16 +462,116 @@ impl PersonaPackService {
                 "persona_list", "persona_validate", "persona_info",
                 "persona_delete", "persona_history"
             ],
+            "resources": [
+                "persona-pack://guides/onboarding",
+                "persona-pack://guides/schema",
+                "persona-pack://guides/field-private",
+                "persona-pack://guides/history",
+                "persona-pack://guides/render",
+            ],
         })
         .to_string())
     }
 }
 
+// ---------------------------------------------------------------------------
+// Bundled guides — exposed as MCP resources at `persona-pack://guides/<name>`.
+//
+// # Sync policy (must not edit only one side)
+//
+// - **Canonical**: `docs/guides/<name>.md` (workspace root, human-navigable
+//   from project root, cross-referenced by README).
+// - **Bundled copy**: `crates/persona-pack-mcp/guides/<name>.md` (= the
+//   files `include_str!`-ed below). These copies exist because
+//   `cargo publish` only packages files within the crate's own directory
+//   tree — a workspace-relative `include_str!` path would silently break
+//   published tarball builds.
+//
+// **Editing rule**: always edit the canonical workspace copy under
+// `docs/guides/`, then run
+// `cp docs/guides/<name>.md crates/persona-pack-mcp/guides/<name>.md`
+// to refresh the bundled copy.
+//
+// **Safety nets**:
+// 1. `include_str!` here → cargo build / publish error out if a bundled copy
+//    is missing.
+// 2. `crates/persona-pack-mcp/build.rs` byte-compares each pair on every
+//    dev build and `panic!`s with a one-line fix command on drift.
+//    Published-tarball builds (workspace copy absent) skip this check.
+
+/// Full onboarding guide bundled with the MCP server.
+pub const GUIDE_ONBOARDING: &str = include_str!("../guides/onboarding.md");
+/// Schema reference bundled with the MCP server.
+pub const GUIDE_SCHEMA: &str = include_str!("../guides/schema.md");
+/// Field-level privacy guide bundled with the MCP server.
+pub const GUIDE_FIELD_PRIVATE: &str = include_str!("../guides/field-private.md");
+/// History (snapshots + view selector) guide bundled with the MCP server.
+pub const GUIDE_HISTORY: &str = include_str!("../guides/history.md");
+/// Render (projection formats) guide bundled with the MCP server.
+pub const GUIDE_RENDER: &str = include_str!("../guides/render.md");
+
+struct GuideEntry {
+    uri: &'static str,
+    name: &'static str,
+    title: &'static str,
+    description: &'static str,
+    body: &'static str,
+}
+
+const GUIDES: &[GuideEntry] = &[
+    GuideEntry {
+        uri: "persona-pack://guides/onboarding",
+        name: "persona-pack onboarding guide",
+        title: "Onboarding — persona-pack in 5 minutes",
+        description: "Concepts (1 dir = 1 Pack), layout, minimum Persona TOML, \
+                      first MCP round-trip, and root resolution.",
+        body: GUIDE_ONBOARDING,
+    },
+    GuideEntry {
+        uri: "persona-pack://guides/schema",
+        name: "persona-pack schema reference",
+        title: "Schema — required fields, origin enum, [extra.*]",
+        description: "Required and optional fields, the origin enum, and the \
+                      unchecked [extra.*] namespace.",
+        body: GUIDE_SCHEMA,
+    },
+    GuideEntry {
+        uri: "persona-pack://guides/field-private",
+        name: "persona-pack field-level privacy guide",
+        title: "Field-level privacy — meta.private_fields + the `as` parameter",
+        description: "How meta.private_fields interacts with the `as` caller \
+                      identity across read / render / write / history / \
+                      validate, including the write guard and scope rules.",
+        body: GUIDE_FIELD_PRIVATE,
+    },
+    GuideEntry {
+        uri: "persona-pack://guides/history",
+        name: "persona-pack history guide",
+        title: "History — snapshots, view selector, past reads",
+        description: "How snapshots are produced on write, filename format, \
+                      listing with the view selector, and reading a past \
+                      version via the `at` parameter.",
+        body: GUIDE_HISTORY,
+    },
+    GuideEntry {
+        uri: "persona-pack://guides/render",
+        name: "persona-pack render guide",
+        title: "Render — projection formats",
+        description: "`format = prompt | header | json` output modes for \
+                      persona_render and their interaction with field-level \
+                      privacy.",
+        body: GUIDE_RENDER,
+    },
+];
+
 #[tool_handler]
 impl ServerHandler for PersonaPackService {
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::default();
-        info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        info.capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_resources()
+            .build();
         info.instructions = Some(
             "persona-pack — portable Persona schema (1 dir = 1 Pack).\n\n\
              Tools:\n\
@@ -482,10 +588,57 @@ impl ServerHandler for PersonaPackService {
              Field-level privacy: persona_read / render / write / history / validate accept `as: <id>` \
              for field-level private redaction. When `as` equals `meta.id`, the full Persona is returned. \
              Otherwise paths listed in `meta.private_fields` are stripped entirely (key-level, not placeholder). \
-             Default (omitted `as`) is anonymous — private fields are stripped."
+             Default (omitted `as`) is anonymous — private fields are stripped.\n\n\
+             Guides (fetch via `read_resource`):\n\
+             - persona-pack://guides/onboarding — concepts, layout, first round-trip.\n\
+             - persona-pack://guides/schema — required fields, origin enum, [extra.*].\n\
+             - persona-pack://guides/field-private — `as` parameter + `meta.private_fields` semantics.\n\
+             - persona-pack://guides/history — snapshots, view selector, past reads.\n\
+             - persona-pack://guides/render — persona_render output formats."
                 .into(),
         );
         info
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _ctx: RequestContext<RoleServer>,
+    ) -> std::result::Result<ListResourcesResult, ErrorData> {
+        let resources = GUIDES
+            .iter()
+            .map(|g| Resource {
+                raw: RawResource {
+                    uri: g.uri.to_string(),
+                    name: g.name.to_string(),
+                    title: Some(g.title.to_string()),
+                    description: Some(g.description.to_string()),
+                    mime_type: Some("text/markdown".to_string()),
+                    size: Some(g.body.len() as u32),
+                    icons: None,
+                    meta: None,
+                },
+                annotations: None,
+            })
+            .collect();
+        Ok(ListResourcesResult::with_all_items(resources))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _ctx: RequestContext<RoleServer>,
+    ) -> std::result::Result<ReadResourceResult, ErrorData> {
+        if let Some(g) = GUIDES.iter().find(|g| g.uri == request.uri) {
+            Ok(ReadResourceResult::new(vec![ResourceContents::text(
+                g.body, g.uri,
+            )]))
+        } else {
+            Err(ErrorData::resource_not_found(
+                format!("unknown resource uri: {}", request.uri),
+                None,
+            ))
+        }
     }
 }
 

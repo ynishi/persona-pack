@@ -153,6 +153,24 @@ Per-call overrides are also supported: every tool accepts an optional
 > template for new Packs, then store your own Personas under your configured
 > root.
 
+## MCP resources
+
+The `persona-pack-mcp` server exposes five bundled guides as MCP resources.
+Clients that support `read_resource` can fetch them without leaving the
+session:
+
+| URI                                     | Content                                                       |
+|-----------------------------------------|---------------------------------------------------------------|
+| `persona-pack://guides/onboarding`      | Concepts, layout, first round-trip.                           |
+| `persona-pack://guides/schema`          | Required fields, origin enum, `[extra.*]`.                    |
+| `persona-pack://guides/field-private`   | `meta.private_fields` + the `as` parameter.                   |
+| `persona-pack://guides/history`         | Snapshots, `view` selector, past reads.                       |
+| `persona-pack://guides/render`          | `persona_render` output formats.                              |
+
+Canonical sources live under [`docs/guides/`](docs/guides/); the crate ships
+in-tree copies at `crates/persona-pack-mcp/guides/` (kept in sync by a
+build-time guard) so that `cargo publish` packages them.
+
 ## Spec
 
 See [`docs/persona-pack-spec.md`](docs/persona-pack-spec.md)

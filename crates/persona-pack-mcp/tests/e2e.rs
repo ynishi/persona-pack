@@ -2,7 +2,11 @@
 
 use std::borrow::Cow;
 
-use rmcp::{model::CallToolRequestParams, transport::TokioChildProcess, ServiceExt};
+use rmcp::{
+    model::{CallToolRequestParams, ReadResourceRequestParams},
+    transport::TokioChildProcess,
+    ServiceExt,
+};
 use serde_json::{json, Value};
 use tokio::process::Command;
 use tokio::time::{sleep, Duration};
@@ -1201,6 +1205,55 @@ public = "visible"
     );
     let err_text = extract_text(&w2);
     assert!(err_text.contains("permission denied"), "got: {err_text}");
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resources_lists_all_guides_and_reads_content() {
+    let transport = TokioChildProcess::new(server_command()).expect("spawn server");
+    let client = ().serve(transport).await.expect("initialize");
+
+    let resources = client.list_all_resources().await.expect("list resources");
+    let uris: Vec<_> = resources.iter().map(|r| r.raw.uri.as_str()).collect();
+    for expected in [
+        "persona-pack://guides/onboarding",
+        "persona-pack://guides/schema",
+        "persona-pack://guides/field-private",
+        "persona-pack://guides/history",
+        "persona-pack://guides/render",
+    ] {
+        assert!(uris.contains(&expected), "missing resource {expected}");
+    }
+    for r in &resources {
+        assert_eq!(
+            r.raw.mime_type.as_deref(),
+            Some("text/markdown"),
+            "resource {} has wrong mime",
+            r.raw.uri
+        );
+    }
+
+    for uri in [
+        "persona-pack://guides/onboarding",
+        "persona-pack://guides/schema",
+        "persona-pack://guides/field-private",
+        "persona-pack://guides/history",
+        "persona-pack://guides/render",
+    ] {
+        let result = client
+            .read_resource(ReadResourceRequestParams::new(uri))
+            .await
+            .expect("read_resource");
+        assert!(!result.contents.is_empty(), "no content returned for {uri}");
+    }
+
+    let unknown = client
+        .read_resource(ReadResourceRequestParams::new(
+            "persona-pack://guides/does-not-exist",
+        ))
+        .await;
+    assert!(unknown.is_err(), "expected error for unknown resource URI");
 
     client.cancel().await.unwrap();
 }
